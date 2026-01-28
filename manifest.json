@@ -1,0 +1,19 @@
+{
+    "name": "SKALYK",
+    "short_name": "SKALYK",
+    "icons": [
+      {
+        "src": "/logo_transparent.png",
+        "sizes": "128x128",
+        "type": "image/png"
+      },
+      {
+        "src": "/logo.png",
+        "sizes": "512x512",
+        "type": "image/png"
+      }
+    ],
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#000000"
+  }
