@@ -467,7 +467,7 @@ const DashboardView = ({
       <header className="p-6 border-b border-zinc-900 flex justify-between items-center bg-zinc-950 sticky top-0 z-50 shadow-md">
       <div className="flex flex-col">
         <img 
-          src="/text.png" 
+          src="text.png" 
           alt="SKALYK Logo"
           className="h-16 w-auto object-contain mb-1" 
         />
