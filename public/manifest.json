@@ -1,19 +1,21 @@
 {
-    "name": "SKALYK",
-    "short_name": "SKALYK",
-    "icons": [
-      {
-        "src": "/logo_transparent.png",
-        "sizes": "128x128",
-        "type": "image/png"
-      },
-      {
-        "src": "/logo.png",
-        "sizes": "512x512",
-        "type": "image/png"
-      }
-    ],
-    "display": "standalone",
-    "background_color": "#ffffff",
-    "theme_color": "#000000"
-  }
+  "name": "Skalyk Training",
+  "short_name": "Skalyk",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#191414",
+  "theme_color": "#191414",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/logo_transparent.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo_transparent.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

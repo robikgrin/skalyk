@@ -29,7 +29,10 @@ import {
   Camera, 
   Image as ImageIcon, 
   Maximize2, 
-  Tag
+  Tag,
+  Settings,
+  Download,
+  Upload
 } from 'lucide-react';
 
 // --- Types & Schema Interfaces ---
@@ -148,6 +151,95 @@ const INITIAL_PROTOCOLS: TrainingProtocol[] = [
 ];
 
 const PRESET_STYLES = ['crimp', 'sloper', 'pinch', 'pocket', 'dyno', 'tech', 'overhang', 'slab', 'comp'];
+
+// --- Data Management Modal ---
+const DataManagementModal = ({ onClose }: { onClose: () => void }) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleExport = () => {
+    const data = {
+      projects: localStorage.getItem('skalyk_projects'),
+      protocols: localStorage.getItem('skalyk_protocols'),
+      logs: localStorage.getItem('skalyk_logs'),
+      version: 1
+    };
+    
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `skalyk_backup_${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const json = JSON.parse(event.target?.result as string);
+        if (json.projects) localStorage.setItem('skalyk_projects', json.projects);
+        if (json.protocols) localStorage.setItem('skalyk_protocols', json.protocols);
+        if (json.logs) localStorage.setItem('skalyk_logs', json.logs);
+        
+        alert('Data restored successfully! App will reload.');
+        window.location.reload();
+      } catch (err) {
+        alert('Invalid backup file');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-6 animate-in fade-in">
+      <div className="bg-zinc-900 w-full max-w-sm rounded-3xl border border-zinc-800 p-6 space-y-6">
+        <div className="flex justify-between items-center">
+           <h2 className="text-xl font-black text-white flex items-center gap-2">
+             <Settings className="w-6 h-6 text-zinc-500" /> SETTINGS
+           </h2>
+           <button onClick={onClose}><X className="text-zinc-500" /></button>
+        </div>
+
+        <div className="space-y-3">
+           <div className="p-4 bg-zinc-950 rounded-2xl border border-zinc-800">
+              <h3 className="text-zinc-400 font-bold text-sm mb-1">Backup Data</h3>
+              <p className="text-zinc-600 text-xs mb-4">Save your progress to a file.</p>
+              <button 
+                onClick={handleExport}
+                className="w-full py-3 bg-zinc-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-zinc-700 transition-all"
+              >
+                <Download className="w-4 h-4" /> Export JSON
+              </button>
+           </div>
+
+           <div className="p-4 bg-zinc-950 rounded-2xl border border-zinc-800">
+              <h3 className="text-zinc-400 font-bold text-sm mb-1">Restore Data</h3>
+              <p className="text-zinc-600 text-xs mb-4">Load progress from a backup file.</p>
+              <button 
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full py-3 bg-zinc-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-zinc-700 transition-all"
+              >
+                <Upload className="w-4 h-4" /> Import JSON
+              </button>
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                className="hidden" 
+                accept=".json" 
+                onChange={handleImport}
+              />
+           </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // --- Main App Component ---
 
@@ -308,18 +400,19 @@ const App = () => {
 // --- Dashboard View ---
 
 const DashboardView = ({ 
-  projects, 
-  onNewProject, 
-  onOpenProject 
-}: { 
-  projects: Project[], 
-  onNewProject: () => void, 
-  onOpenProject: (id: string) => void 
-}) => {
-  type ChartType = 'load' | 'rate' | 'cumulative' | 'daily_routes' | 'grade_dist';
-  const [chartType, setChartType] = useState<ChartType>('load');
-
-  const quote = useMemo(() => MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)], []);
+    projects, 
+    onNewProject, 
+    onOpenProject 
+  }: { 
+    projects: Project[], 
+    onNewProject: () => void, 
+    onOpenProject: (id: string) => void 
+  }) => {
+    // 1. Определяем, какие бывают типы графиков
+    type ChartType = 'load' | 'rate' | 'cumulative' | 'daily_routes' | 'grade_dist';
+    const [chartType, setChartType] = useState<ChartType>('load');
+    const [showSettings, setShowSettings] = useState(false);
+    const quote = useMemo(() => MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)], []);
 
   // --- Calculations ---
   
@@ -463,23 +556,36 @@ const DashboardView = ({
   const readiness = currentVol > 50 ? 'rest' : 'ready';
 
   return (
-    <>
-      <header className="p-6 border-b border-zinc-900 flex justify-between items-center bg-zinc-950 sticky top-0 z-50 shadow-md">
-      <div className="flex flex-col">
-        <img 
-          src="text.png" 
-          alt="SKALYK Logo"
-          className="h-16 w-auto object-contain mb-1" 
-        />
-      </div>
-      
-      <button 
-        onClick={onNewProject}
-        className="bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 p-3 rounded-2xl transition-all"
-      >
-        <Plus className="w-6 h-6 text-zinc-100" />
-      </button>
-    </header>
+      <>
+        <header className="p-6 border-b border-zinc-900 flex justify-between items-center bg-zinc-950 sticky top-0 z-50 shadow-md">
+          <div className="flex flex-col">
+            <img 
+              src="text.png" 
+              alt="SKALYK Logo"
+              className="h-16 w-auto object-contain mb-1" 
+            />
+          </div>
+          
+          <div className="flex gap-2">
+            {/* Кнопка настроек */}
+            <button 
+              onClick={() => setShowSettings(true)}
+              className="bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 active:bg-zinc-700 p-3 rounded-2xl transition-all"
+            >
+              <Settings className="w-6 h-6 text-zinc-400" />
+            </button>
+  
+            <button 
+              onClick={onNewProject}
+              className="bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 p-3 rounded-2xl transition-all"
+            >
+              <Plus className="w-6 h-6 text-zinc-100" />
+            </button>
+          </div>
+        </header>
+  
+        {/* Вызов модального окна */}
+        {showSettings && <DataManagementModal onClose={() => setShowSettings(false)} />}
 
       <div className="p-6 space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1041,8 +1147,6 @@ const TrainingView = ({ protocols, setProtocols }: { protocols: TrainingProtocol
     </div>
   );
 };
-
-// --- Timer View with Stopwatch & Alert ---
 
 // --- Timer View with Stopwatch & Alert ---
 
