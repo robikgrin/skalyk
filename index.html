@@ -1,0 +1,85 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>SKALYK</title>
+  
+  <meta name="theme-color" content="#191414">
+  
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@200..900&display=swap" rel="stylesheet">
+
+  <link rel="icon" type="image/png" href="/logo_transparent.png" sizes="48x48" />
+  <link rel="icon" type="image/png" href="/logo_transparent.png" sizes="96x96" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/logo.png" />
+  <link rel="shortcut icon" href="/logo_transparent.png" />
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Unbounded', 'sans-serif'],
+          },
+          // Добавление вашей палитры в Tailwind
+          colors: {
+            'klein-blue': '#4100F5',
+            'citric': '#CDF564',
+            'aquamarine': '#9BF0E1',
+            'fushia': '#F037A5',
+            'tangerine': '#FF4632',
+            'skalyk-black': '#191414',
+            
+            // Переопределение стандартных цветов для быстрой смены темы, 
+            // если вы хотите, чтобы старые классы (lime, cyan, orange) 
+            // приняли точные значения из вашей палитры:
+            lime: {
+              400: '#CDF564', // Citric вместо стандартного Lime
+            },
+            cyan: {
+              400: '#9BF0E1', // Aquamarine вместо стандартного Cyan
+            },
+            orange: {
+              500: '#FF4632', // Tangerine вместо стандартного Orange
+            },
+            zinc: {
+              950: '#191414', // Ваш фирменный Black вместо стандартного Zinc
+              900: '#221E1E', // Чуть светлее для карточек (авто-генерация)
+            }
+          },
+        },
+      },
+    }
+  </script>
+  <script type="importmap">
+  {
+    "imports": {
+      "lucide-react": "https://esm.sh/lucide-react@^0.563.0",
+      "react/": "https://esm.sh/react@^19.2.3/",
+      "react": "https://esm.sh/react@^19.2.3",
+      "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+      "react-dom": "https://esm.sh/react-dom@^19.2.3"
+    }
+  }
+  </script>
+  <style>
+    /* Глобальный фон сайта в цвет Black из палитры */
+    body, html {
+      background-color: #191414;
+      color: white;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./src/new_main.tsx"></script>
+</body>
+</html>
