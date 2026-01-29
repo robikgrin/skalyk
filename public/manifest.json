@@ -1,7 +1,8 @@
 {
   "name": "Skalyk Training",
   "short_name": "Skalyk",
-  "start_url": "/",
+  "start_url": "/skalyk/",
+  "scope": "/skalyk/",
   "display": "standalone",
   "background_color": "#191414",
   "theme_color": "#191414",
