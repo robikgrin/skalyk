@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import { Auth } from '@supabase/auth-ui-react';
+import { ThemeSupa } from '@supabase/auth-ui-shared';
+import { supabase } from './supabaseClient';
 import { createRoot } from 'react-dom/client';
 import { 
   Activity, 
@@ -50,6 +54,7 @@ interface Project {
   attempts: Attempt[];
   image?: string; // Base64 data URL
   notes?: string; // User arbitrary notes (Beta, location info, etc.)
+  user_id?: string; // Added for Supabase
 }
 
 interface Attempt {
@@ -59,6 +64,8 @@ interface Attempt {
   fallMove?: number; 
   progress: number; // 0-100%
   failureReason?: 'power' | 'technique' | 'beta' | 'slip' | 'mental';
+  project_id?: string; // Added for Supabase
+  user_id?: string; // Added for Supabase
 }
 
 interface TrainingProtocol {
@@ -116,35 +123,6 @@ const MOTIVATIONAL_QUOTES: Quote[] = [
   { text: "Don't be sorry, be better.", character: "Kratos", source: "God of War" }
 ];
 
-const INITIAL_PROJECTS: Project[] = [
-  {
-    id: '1',
-    name: 'The Pink One',
-    grade: '6c',
-    angle: 45,
-    totalMoves: 12,
-    status: 'active',
-    style: ['crimp', 'overhang'],
-    notes: 'Start is low, big move to the left crimp is the crux. Need to keep right toe hard.',
-    attempts: [
-      { id: 'a1', date: new Date(Date.now() - 86400000 * 2).toISOString(), outcome: 'fall', fallMove: 4, progress: 33, failureReason: 'beta' },
-      { id: 'a2', date: new Date(Date.now() - 86400000 * 2).toISOString(), outcome: 'fall', fallMove: 6, progress: 50, failureReason: 'technique' },
-      { id: 'a3', date: new Date(Date.now() - 86400000 * 1).toISOString(), outcome: 'fall', fallMove: 9, progress: 75, failureReason: 'power' },
-    ]
-  },
-  {
-    id: '2',
-    name: 'Sloper Nightmare',
-    grade: '7a+',
-    angle: 15,
-    totalMoves: 8,
-    status: 'active',
-    style: ['sloper', 'technical'],
-    notes: 'Friction dependant. Come back when it is colder.',
-    attempts: []
-  }
-];
-
 const INITIAL_PROTOCOLS: TrainingProtocol[] = [
   { id: '1', title: 'Max Hangs', description: '10s hang, 3min rest. 5 sets. Use 90% max weight.' },
   { id: '2', title: 'Repeaters 7/3', description: '7s on, 3s off. 6 reps per set. 3 sets total. 5min rest between sets.' },
@@ -152,13 +130,14 @@ const INITIAL_PROTOCOLS: TrainingProtocol[] = [
 
 const PRESET_STYLES = ['crimp', 'sloper', 'pinch', 'pocket', 'dyno', 'tech', 'overhang', 'slab', 'comp'];
 
-// --- Data Management Modal ---
+// --- Data Management Modal (Updated mainly for local data) ---
 const DataManagementModal = ({ onClose }: { onClose: () => void }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleExport = () => {
     const data = {
-      projects: localStorage.getItem('skalyk_projects'),
+      // Note: Projects are now in cloud, but we export local cache or logic if needed
+      // For now exporting what's in localStorage for protocols/logs
       protocols: localStorage.getItem('skalyk_protocols'),
       logs: localStorage.getItem('skalyk_logs'),
       version: 1
@@ -168,7 +147,7 @@ const DataManagementModal = ({ onClose }: { onClose: () => void }) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `skalyk_backup_${new Date().toISOString().slice(0,10)}.json`;
+    a.download = `skalyk_local_data_${new Date().toISOString().slice(0,10)}.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -183,11 +162,10 @@ const DataManagementModal = ({ onClose }: { onClose: () => void }) => {
     reader.onload = (event) => {
       try {
         const json = JSON.parse(event.target?.result as string);
-        if (json.projects) localStorage.setItem('skalyk_projects', json.projects);
         if (json.protocols) localStorage.setItem('skalyk_protocols', json.protocols);
         if (json.logs) localStorage.setItem('skalyk_logs', json.logs);
         
-        alert('Data restored successfully! App will reload.');
+        alert('Local data (Logs/Plans) restored! App will reload.');
         window.location.reload();
       } catch (err) {
         alert('Invalid backup file');
@@ -208,25 +186,23 @@ const DataManagementModal = ({ onClose }: { onClose: () => void }) => {
 
         <div className="space-y-3">
            <div className="p-4 bg-zinc-950 rounded-2xl border border-zinc-800">
-              <h3 className="text-zinc-400 font-bold text-sm mb-1">Backup Data</h3>
-              <p className="text-zinc-600 text-xs mb-4">Save your progress to a file.</p>
-              <button 
-                onClick={handleExport}
-                className="w-full py-3 bg-zinc-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-zinc-700 transition-all"
-              >
-                <Download className="w-4 h-4" /> Export JSON
-              </button>
-           </div>
-
-           <div className="p-4 bg-zinc-950 rounded-2xl border border-zinc-800">
-              <h3 className="text-zinc-400 font-bold text-sm mb-1">Restore Data</h3>
-              <p className="text-zinc-600 text-xs mb-4">Load progress from a backup file.</p>
-              <button 
-                onClick={() => fileInputRef.current?.click()}
-                className="w-full py-3 bg-zinc-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-zinc-700 transition-all"
-              >
-                <Upload className="w-4 h-4" /> Import JSON
-              </button>
+              <h3 className="text-zinc-400 font-bold text-sm mb-1">Local Data</h3>
+              <p className="text-zinc-600 text-xs mb-4">Export/Import Plans & Daily Logs (Projects are synced to Cloud).</p>
+              
+              <div className="flex gap-2">
+                <button 
+                  onClick={handleExport}
+                  className="flex-1 py-3 bg-zinc-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-zinc-700 transition-all"
+                >
+                  <Download className="w-4 h-4" /> Export
+                </button>
+                <button 
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex-1 py-3 bg-zinc-800 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-zinc-700 transition-all"
+                >
+                  <Upload className="w-4 h-4" /> Import
+                </button>
+              </div>
               <input 
                 type="file" 
                 ref={fileInputRef} 
@@ -235,30 +211,39 @@ const DataManagementModal = ({ onClose }: { onClose: () => void }) => {
                 onChange={handleImport}
               />
            </div>
+           
+           <div className="p-4 bg-zinc-950 rounded-2xl border border-zinc-800">
+              <button 
+                  onClick={async () => {
+                    await supabase.auth.signOut();
+                    window.location.reload();
+                  }}
+                  className="w-full py-3 bg-red-900/20 text-red-500 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-red-900/30 transition-all"
+                >
+                  Sign Out
+              </button>
+           </div>
         </div>
       </div>
     </div>
   );
 };
 
-// --- Main App Component ---
+// --- Main App Component (Updated for Supabase) ---
 
 const App = () => {
   const [activeTab, setActiveTab] = useState<Tab>('home');
   const [viewMode, setViewMode] = useState<'main' | 'project_detail' | 'new_project' | 'edit_project'>('main');
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  
+  // Auth & Loading States
+  const [loading, setLoading] = useState(true); 
+  const [session, setSession] = useState<Session | null>(null);
 
-  // --- Persistence Logic ---
-  const [projects, setProjects] = useState<Project[]>(() => {
-    try {
-      const saved = localStorage.getItem('skalyk_projects');
-      return saved ? JSON.parse(saved) : INITIAL_PROJECTS;
-    } catch (e) {
-      console.error("Failed to load projects", e);
-      return INITIAL_PROJECTS;
-    }
-  });
-
+  // Data States
+  const [projects, setProjects] = useState<Project[]>([]);
+  
+  // Local Data (kept in localStorage for now)
   const [protocols, setProtocols] = useState<TrainingProtocol[]>(() => {
     try {
       const saved = localStorage.getItem('skalyk_protocols');
@@ -277,16 +262,53 @@ const App = () => {
     }
   });
 
-  // Save effects
+  // --- 1. Authentication & Initial Fetch ---
   useEffect(() => {
-    try {
-      localStorage.setItem('skalyk_projects', JSON.stringify(projects));
-    } catch (e) {
-      alert("Storage Full! Cannot save data. Please delete some projects or images.");
-      console.error("Storage quota exceeded", e);
-    }
-  }, [projects]);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) fetchProjects();
+      else setLoading(false);
+    });
 
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) fetchProjects();
+      else {
+        setProjects([]);
+        setLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // --- 2. Fetch Projects from Supabase ---
+  const fetchProjects = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('projects')
+        .select(`*, attempts(*)`)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data) {
+        // Formatter: Ensure attempts is an array and structure matches TS types
+        const formattedData = data.map(p => ({
+          ...p,
+          attempts: p.attempts || []
+        }));
+        setProjects(formattedData as Project[]);
+      }
+    } catch (error) {
+      console.error('Error fetching projects:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- Local Persistence for Protocols/Logs ---
   useEffect(() => {
     localStorage.setItem('skalyk_protocols', JSON.stringify(protocols));
   }, [protocols]);
@@ -301,8 +323,36 @@ const App = () => {
     projects.find(p => p.id === activeProjectId), 
   [projects, activeProjectId]);
 
-  // Actions
-  const handleAddAttempt = (projectId: string, attempt: Attempt) => {
+  // --- Actions (Updated for Supabase) ---
+
+  const handleCreateProject = async (project: Project) => {
+    // Optimistic Update
+    setProjects(prev => [project, ...prev]);
+    setViewMode('main');
+
+    try {
+      const { error } = await supabase.from('projects').insert([{
+        id: project.id,
+        user_id: session?.user.id,
+        name: project.name,
+        grade: project.grade,
+        angle: project.angle,
+        totalMoves: project.totalMoves,
+        status: project.status,
+        style: project.style,
+        notes: project.notes,
+        image: project.image,
+        created_at: new Date().toISOString()
+      }]);
+      if (error) throw error;
+    } catch (err) {
+      console.error("Supabase Create Error:", err);
+      alert("Failed to save project to cloud.");
+    }
+  };
+
+  const handleAddAttempt = async (projectId: string, attempt: Attempt) => {
+    // Optimistic Update
     setProjects(prev => prev.map(p => {
       if (p.id === projectId) {
         const newStatus = attempt.outcome === 'send' ? 'sent' : p.status;
@@ -314,26 +364,76 @@ const App = () => {
       }
       return p;
     }));
+
+    try {
+      // 1. Insert Attempt
+      const { error: attemptError } = await supabase.from('attempts').insert([{
+        id: attempt.id,
+        project_id: projectId,
+        user_id: session?.user.id,
+        date: attempt.date,
+        outcome: attempt.outcome,
+        fallMove: attempt.fallMove,
+        progress: attempt.progress,
+        failureReason: attempt.failureReason
+      }]);
+      if (attemptError) throw attemptError;
+
+      // 2. Update Project Status if Send
+      if (attempt.outcome === 'send') {
+        await supabase.from('projects').update({ status: 'sent' }).eq('id', projectId);
+      }
+    } catch (err) {
+      console.error("Supabase Attempt Error:", err);
+    }
   };
 
-  const handleUpdateProjectNotes = (projectId: string, notes: string) => {
-    setProjects(prev => prev.map(p => p.id === projectId ? { ...p, notes } : p));
-  };
-
-  const handleCreateProject = (project: Project) => {
-    setProjects(prev => [...prev, project]);
-    setViewMode('main');
-  };
-
-  const handleUpdateProject = (updatedProject: Project) => {
+  const handleUpdateProject = async (updatedProject: Project) => {
+    // Optimistic
     setProjects(prev => prev.map(p => p.id === updatedProject.id ? updatedProject : p));
     setViewMode('project_detail');
+
+    try {
+      const { error } = await supabase.from('projects').update({
+        name: updatedProject.name,
+        grade: updatedProject.grade,
+        angle: updatedProject.angle,
+        totalMoves: updatedProject.totalMoves,
+        status: updatedProject.status,
+        style: updatedProject.style,
+        notes: updatedProject.notes,
+        image: updatedProject.image
+      }).eq('id', updatedProject.id);
+      if (error) throw error;
+    } catch (err) {
+      console.error("Supabase Update Error:", err);
+    }
   };
 
-  const handleDeleteProject = (projectId: string) => {
+  const handleUpdateProjectNotes = async (projectId: string, notes: string) => {
+    // Optimistic
+    setProjects(prev => prev.map(p => p.id === projectId ? { ...p, notes } : p));
+    
+    // Auto-save to DB (no try-catch for silent save)
+    await supabase.from('projects').update({ notes }).eq('id', projectId);
+  };
+
+  const handleDeleteProject = async (projectId: string) => {
+    const confirm = window.confirm("Are you sure? This will delete the project from the cloud.");
+    if (!confirm) return;
+
+    // Optimistic
     setProjects(prev => prev.filter(p => p.id !== projectId));
     setActiveProjectId(null);
     setViewMode('main');
+
+    try {
+      const { error } = await supabase.from('projects').delete().eq('id', projectId);
+      if (error) throw error;
+    } catch (err) {
+      console.error("Supabase Delete Error:", err);
+      alert("Failed to delete from cloud.");
+    }
   };
 
   const handleUpdateDailyLog = (dateKey: string, text: string) => {
@@ -348,7 +448,45 @@ const App = () => {
     setViewMode('project_detail');
   };
 
-  // View Routing
+  // --- RENDER ---
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+         <div className="animate-pulse text-lime-400 font-black text-xl tracking-widest">LOADING SKALYK...</div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-zinc-900 p-8 rounded-3xl border border-zinc-800">
+          <h1 className="text-4xl font-black text-white mb-8 text-center italic tracking-tighter">SKALYK</h1>
+          <Auth 
+            supabaseClient={supabase} 
+            appearance={{ 
+              theme: ThemeSupa,
+              variables: {
+                default: {
+                  colors: {
+                    brand: '#a3e635', // Lime-400
+                    brandAccent: '#84cc16',
+                    inputBackground: '#27272a',
+                    inputText: 'white',
+                  }
+                }
+              }
+            }} 
+            theme="dark"
+            providers={[]} 
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // View Routing (Must check viewMode first for full screen pages)
   if (viewMode === 'new_project') {
     return <ProjectFormView onSave={handleCreateProject} onBack={() => setViewMode('main')} />;
   }
@@ -441,7 +579,7 @@ const DashboardView = ({
     levelIndex = calculateMedianGradeIndex('active');
     isProjectedLevel = true;
   }
-   
+    
   const displayLevel = levelIndex > -1 ? FRENCH_GRADES[levelIndex] : '-';
 
   const today = new Date();
@@ -464,7 +602,7 @@ const DashboardView = ({
 
   const currentVol = getVolumeForPeriod(oneWeekAgo, today);
   const prevVol = getVolumeForPeriod(twoWeeksAgo, oneWeekAgo);
-   
+    
   let trendPercent = 0;
   if (prevVol === 0) {
     trendPercent = currentVol > 0 ? 100 : 0;
@@ -554,7 +692,7 @@ const DashboardView = ({
   const maxDaily = Math.max(1, ...chartData.map(d => d.dailyTotal));
 
   const readiness = currentVol > 50 ? 'rest' : 'ready';
-
+  
   return (
       <>
         <header className="p-6 border-b border-zinc-900 flex justify-between items-center bg-zinc-950 sticky top-0 z-50 shadow-md">
@@ -676,7 +814,7 @@ const DashboardView = ({
                </div>
             )}
           </div>
-           
+            
           <div className="h-64 pb-4 flex items-end justify-between gap-1">
             {chartType === 'grade_dist' ? (
               gradeDistData.map((item) => {
@@ -716,15 +854,15 @@ const DashboardView = ({
                   );
                   chartBar = (
                     <div className="relative w-full max-w-[16px] flex items-end h-full">
-                       {day.attempts > 0 ? (
+                        {day.attempts > 0 ? (
                           <div style={{ height: `${Math.max(10, attemptsH)}%` }} className="absolute bottom-0 w-full bg-zinc-600 rounded-sm" />
-                       ) : (
+                        ) : (
                           <div className="absolute bottom-0 w-full h-full bg-zinc-800 rounded-sm opacity-20" />
-                       )}
-                       {day.sends > 0 && (
+                        )}
+                        {day.sends > 0 && (
                           // Citric for sends
                           <div style={{ height: `${Math.max(5, sendsH)}%` }} className="absolute bottom-0 w-full bg-lime-400 z-10 rounded-sm shadow-[0_0_8px_rgba(163,230,53,0.5)]" />
-                       )}
+                        )}
                     </div>
                   );
                 } else if (chartType === 'rate') {
@@ -736,8 +874,8 @@ const DashboardView = ({
                     <div className="relative w-full max-w-[16px] flex items-end h-full">
                       <div className="absolute bottom-0 w-full h-full bg-zinc-800 rounded-sm opacity-20" />
                       {day.attempts > 0 && (
-                         // Citric for rate
-                         <div style={{ height: `${Math.max(2, rate)}%` }} className={`absolute bottom-0 w-full rounded-sm ${rate > 0 ? 'bg-lime-400 shadow-[0_0_8px_rgba(163,230,53,0.5)]' : 'bg-zinc-600'}`} />
+                          // Citric for rate
+                          <div style={{ height: `${Math.max(2, rate)}%` }} className={`absolute bottom-0 w-full rounded-sm ${rate > 0 ? 'bg-lime-400 shadow-[0_0_8px_rgba(163,230,53,0.5)]' : 'bg-zinc-600'}`} />
                       )}
                     </div>
                   );
@@ -755,12 +893,12 @@ const DashboardView = ({
                   );
                   chartBar = (
                     <div className="w-full max-w-[16px] flex flex-col justify-end relative h-full">
-                       <div className="w-full h-full bg-zinc-800 rounded-sm opacity-20 absolute" />
-                       <div className="relative w-full flex flex-col justify-end" style={{ height: `${totalH}%` }}>
+                        <div className="w-full h-full bg-zinc-800 rounded-sm opacity-20 absolute" />
+                        <div className="relative w-full flex flex-col justify-end" style={{ height: `${totalH}%` }}>
                           <div className="w-full bg-orange-500 rounded-t-sm" style={{ height: `${day.totalCum > 0 ? (day.cumHard / day.totalCum) * 100 : 0}%` }} />
                           <div className="w-full bg-cyan-400" style={{ height: `${day.totalCum > 0 ? (day.cumNormal / day.totalCum) * 100 : 0}%` }} />
                           <div className="w-full bg-lime-400 rounded-b-sm" style={{ height: `${day.totalCum > 0 ? (day.cumEasy / day.totalCum) * 100 : 0}%` }} />
-                       </div>
+                        </div>
                     </div>
                   );
                 } else if (chartType === 'daily_routes') {
@@ -777,14 +915,14 @@ const DashboardView = ({
                   );
                   chartBar = (
                     <div className="w-full max-w-[16px] flex flex-col justify-end relative h-full">
-                       <div className="w-full h-full bg-zinc-800 rounded-sm opacity-20 absolute" />
-                       {day.dailyTotal > 0 && (
+                        <div className="w-full h-full bg-zinc-800 rounded-sm opacity-20 absolute" />
+                        {day.dailyTotal > 0 && (
                           <div className="relative w-full flex flex-col justify-end" style={{ height: `${Math.max(2, totalH)}%` }}>
                               <div className="w-full bg-orange-500 rounded-t-sm" style={{ height: `${day.dailyTotal > 0 ? (day.dailyHard / day.dailyTotal) * 100 : 0}%` }} />
                               <div className="w-full bg-cyan-400" style={{ height: `${day.dailyTotal > 0 ? (day.dailyNormal / day.dailyTotal) * 100 : 0}%` }} />
                               <div className="w-full bg-lime-400 rounded-b-sm" style={{ height: `${day.dailyTotal > 0 ? (day.dailyEasy / day.dailyTotal) * 100 : 0}%` }} />
                           </div>
-                       )}
+                        )}
                     </div>
                   );
                 }
@@ -796,7 +934,7 @@ const DashboardView = ({
                     </div>
                     {chartBar}
                     <div className={`mt-2 text-[8px] font-bold ${idx % 5 === 0 || idx === 29 ? 'text-zinc-500' : 'text-transparent'}`}>
-                       {idx % 5 === 0 || idx === 29 ? day.date.getDate() : '.'}
+                        {idx % 5 === 0 || idx === 29 ? day.date.getDate() : '.'}
                     </div>
                   </div>
                 );
@@ -1057,7 +1195,7 @@ const TrainingView = ({ protocols, setProtocols }: { protocols: TrainingProtocol
     if (!newTitle.trim()) return;
     setProtocols([...protocols, { id: Date.now().toString(), title: newTitle, description: newDesc }]);
     setIsAdding(false);
-    setNewTitle(' ');
+    setNewTitle('');
     setNewDesc('');
   };
 
@@ -1375,11 +1513,11 @@ const ProjectFormView = ({ initialData, onSave, onBack }: { initialData?: Projec
   };
   
   const handleAddTag = () => {
-     const trimmed = tagInput.trim();
-     if (trimmed && !(formData.style || []).includes(trimmed)) {
-        setFormData({ ...formData, style: [...(formData.style || []), trimmed] });
-     }
-     setTagInput('');
+      const trimmed = tagInput.trim();
+      if (trimmed && !(formData.style || []).includes(trimmed)) {
+         setFormData({ ...formData, style: [...(formData.style || []), trimmed] });
+      }
+      setTagInput('');
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1646,17 +1784,17 @@ const ProjectDetailView = ({
        </div>
 
        <div className="p-6 space-y-8 -mt-4 relative z-10">
-          {/* Action Buttons */}
-          <button 
+         {/* Action Buttons */}
+         <button 
              onClick={() => setShowLogModal(true)}
              // Citric Shadow
              className="w-full bg-lime-400 text-black font-black uppercase tracking-wider p-4 rounded-2xl shadow-[0_0_20px_rgba(163,230,53,0.3)] hover:shadow-[0_0_30px_rgba(163,230,53,0.5)] transition-all active:scale-[0.98]"
-          >
+         >
              Log Attempt
-          </button>
+         </button>
 
-          {/* Stats */}
-          <div className="grid grid-cols-3 gap-4">
+         {/* Stats */}
+         <div className="grid grid-cols-3 gap-4">
              <div className="bg-zinc-900 p-4 rounded-2xl border border-zinc-800 text-center">
                 <div className="text-zinc-500 text-[10px] font-bold uppercase mb-1">Attempts</div>
                 <div className="text-xl font-black text-white">{project.attempts.length}</div>
@@ -1673,22 +1811,22 @@ const ProjectDetailView = ({
                    {project.status}
                 </div>
              </div>
-          </div>
+         </div>
 
-          {/* Notes */}
-          <div>
-            <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">Beta & Notes</h3>
-            <textarea 
-               value={project.notes || ''}
-               onChange={(e) => onUpdateNotes(e.target.value)}
-               // Citric Focus
-               className="w-full bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4 text-zinc-300 text-sm min-h-[100px] focus:outline-none focus:border-lime-400/50"
-               placeholder="Write down your sequence..."
-            />
-          </div>
+         {/* Notes */}
+         <div>
+           <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">Beta & Notes</h3>
+           <textarea 
+              value={project.notes || ''}
+              onChange={(e) => onUpdateNotes(e.target.value)}
+              // Citric Focus
+              className="w-full bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4 text-zinc-300 text-sm min-h-[100px] focus:outline-none focus:border-lime-400/50"
+              placeholder="Write down your sequence..."
+           />
+         </div>
 
-          {/* History */}
-          <div>
+         {/* History */}
+         <div>
              <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">History</h3>
              <div className="space-y-3">
                 {[...project.attempts].reverse().map((attempt) => (
@@ -1709,12 +1847,12 @@ const ProjectDetailView = ({
                 ))}
                 {project.attempts.length === 0 && <p className="text-center text-zinc-600 text-sm py-4">No attempts logged yet.</p>}
              </div>
-          </div>
+         </div>
        </div>
 
        {/* Log Modal Overlay */}
        {showLogModal && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4">
+         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4">
              <div className="bg-zinc-900 w-full max-w-md rounded-3xl p-6 border border-zinc-800 space-y-6">
                 <div className="flex justify-between items-center">
                    <h2 className="text-xl font-black text-white">LOG ATTEMPT</h2>
@@ -1779,15 +1917,15 @@ const ProjectDetailView = ({
                    SAVE ENTRY
                 </button>
              </div>
-          </div>
+         </div>
        )}
        
        {/* Image Modal */}
        {showImage && project.image && (
-          <div className="fixed inset-0 z-[60] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4 animate-in fade-in" onClick={() => setShowImage(false)}>
-            <button className="absolute top-6 right-6 p-2 bg-zinc-800 rounded-full text-white"><X className="w-6 h-6" /></button>
-            <img src={project.image} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" onClick={(e) => e.stopPropagation()} />
-          </div>
+         <div className="fixed inset-0 z-[60] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4 animate-in fade-in" onClick={() => setShowImage(false)}>
+           <button className="absolute top-6 right-6 p-2 bg-zinc-800 rounded-full text-white"><X className="w-6 h-6" /></button>
+           <img src={project.image} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" onClick={(e) => e.stopPropagation()} />
+         </div>
        )}
     </div>
   );
