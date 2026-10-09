@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getProjectImageUrl, isSupabaseConfigured, PROJECT_IMAGES_BUCKET, saveProjectImage, supabase } from './supabaseClient';
+import { HOLD_COLOR_OPTIONS, HoldAnnotator, HoldPhotoPreview } from './HoldAnnotator';
+import type { HoldMarker } from './HoldAnnotator';
 import { 
   Activity, TrendingUp, Plus, Calendar as CalendarIcon, Clock, 
   CheckCircle, XCircle, ChevronRight, Dumbbell, ArrowLeft, Trash2, 
@@ -22,6 +24,8 @@ interface Project {
   attempts: Attempt[];
   image?: string; 
   notes?: string; 
+  holdColor?: string;
+  holdMarkers?: HoldMarker[];
   user_id?: string;
 }
 
@@ -42,12 +46,6 @@ interface TrainingProtocol {
   description: string;
 }
 
-interface Quote {
-  text: string;
-  character: string;
-  source: string;
-}
-
 // --- Constants ---
 const FRENCH_GRADES = ['3', '4', '5a', '5b', '5c', '6a', '6a+', '6b', '6b+', '6c', '6c+', '7a', '7a+', '7b', '7b+', '7c', '7c+', '8a', '8a+', '8b', '8b+', '8c', '8c+', '9a'];
 const INITIAL_PROTOCOLS: TrainingProtocol[] = [
@@ -55,11 +53,6 @@ const INITIAL_PROTOCOLS: TrainingProtocol[] = [
   { id: '2', title: 'Repeaters 7/3', description: '7s on, 3s off. 6 reps per set.' },
 ];
 const PRESET_STYLES = ['crimp', 'sloper', 'pinch', 'pocket', 'dyno', 'tech', 'overhang', 'slab', 'comp'];
-const MOTIVATIONAL_QUOTES: Quote[] = [
-  { text: "Do or do not. There is no try.", character: "Yoda", source: "Star Wars" },
-  { text: "The climb is all there is.", character: "Jon Snow", source: "Game of Thrones" }
-];
-
 const isColumnCompatibilityError = (error: { code?: string } | null) =>
   error?.code === 'PGRST204' || error?.code === '42703';
 
@@ -68,6 +61,7 @@ const toUserError = (error: unknown) => {
   const message = error instanceof Error ? error.message : errorObject?.message || String(error || 'Unknown error');
   if (errorObject?.code === '540' || /project.*paused/i.test(message)) return 'The free Supabase project is paused. Resume it in the Supabase dashboard, then retry.';
   if (errorObject?.code === '402' || errorObject?.status === 402 || /exceed.*quota|read.only/i.test(message)) return 'The Supabase free-tier limit was reached. Check project usage in the Supabase dashboard.';
+  if (/hold_color|hold_markers/i.test(message)) return 'Apply supabase/migrations/20261009000001_route_hold_annotations.sql in the Supabase SQL Editor, then retry.';
   if (/invalid login credentials/i.test(message)) return 'The email or password is incorrect.';
   if (/failed to fetch|network|timeout|load failed/i.test(message)) return 'Could not connect to the service. Check your connection and try again.';
   return message;
@@ -79,6 +73,8 @@ const mapProjectRow = (row: Record<string, unknown>): Project => {
     ...row,
     totalMoves: (row.total_moves ?? row.totalMoves ?? 0) as number,
     style: (Array.isArray(row.style) ? row.style : []) as string[],
+    holdColor: (row.hold_color ?? row.holdColor ?? undefined) as string | undefined,
+    holdMarkers: (Array.isArray(row.hold_markers) ? row.hold_markers : Array.isArray(row.holdMarkers) ? row.holdMarkers : []) as HoldMarker[],
     attempts: attempts.map((value) => {
       const attempt = value as Record<string, unknown>;
       return {
@@ -301,11 +297,15 @@ const App = () => {
     try {
       const image = await saveProjectImage(project.image, session.user.id);
       if (project.image?.startsWith('data:image/')) uploadedImage = image;
-      const snakeCaseRecord = {
+      const snakeCaseRecord: Record<string, unknown> = {
         user_id: session.user.id, name: project.name, grade: project.grade, angle: project.angle,
         total_moves: project.totalMoves, status: project.status, style: project.style,
         notes: project.notes, image,
       };
+      if (project.image && project.holdColor) {
+        snakeCaseRecord.hold_color = project.holdColor;
+        snakeCaseRecord.hold_markers = project.holdMarkers || [];
+      }
       let { error } = await supabase.from('projects').insert([snakeCaseRecord]);
       if (isColumnCompatibilityError(error)) {
         const legacyRecord = { ...snakeCaseRecord, totalMoves: snakeCaseRecord.total_moves } as Record<string, unknown>;
@@ -361,11 +361,15 @@ const App = () => {
     try {
       const image = await saveProjectImage(updatedProject.image, session.user.id);
       if (updatedProject.image?.startsWith('data:image/')) uploadedImage = image;
-      const snakeCaseRecord = {
+      const snakeCaseRecord: Record<string, unknown> = {
         name: updatedProject.name, grade: updatedProject.grade, angle: updatedProject.angle,
         total_moves: updatedProject.totalMoves, status: updatedProject.status, style: updatedProject.style,
         notes: updatedProject.notes, image,
       };
+      if (updatedProject.image && updatedProject.holdColor) {
+        snakeCaseRecord.hold_color = updatedProject.holdColor;
+        snakeCaseRecord.hold_markers = updatedProject.holdMarkers || [];
+      }
       let { error } = await supabase.from('projects').update(snakeCaseRecord)
         .eq('id', updatedProject.id).eq('user_id', session.user.id);
       if (isColumnCompatibilityError(error)) {
@@ -478,7 +482,6 @@ const DashboardView = ({ projects, onNewProject, onOpenProject }: { projects: Pr
     type ChartType = 'load' | 'rate' | 'cumulative' | 'daily_routes' | 'grade_dist';
     const [chartType, setChartType] = useState<ChartType>('load');
     const [showSettings, setShowSettings] = useState(false);
-    const quote = useMemo(() => MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)], []);
 
   const calculateMedianGradeIndex = (status: 'sent' | 'active') => {
     const grades = projects.filter(p => p.status === status).map(p => FRENCH_GRADES.indexOf(p.grade)).filter(i => i !== -1); 
@@ -563,9 +566,9 @@ const DashboardView = ({ projects, onNewProject, onOpenProject }: { projects: Pr
               </div>
               {readiness === 'ready' ? (<h2 className="text-3xl font-black text-white mb-1">TRAIN HARD</h2>) : (<h2 className="text-3xl font-black text-orange-500 mb-1">ACTIVE REST</h2>)}
             </div>
-            <div className="relative z-10 mt-4">
-               <p className="text-2xl text-zinc-300 italic font-medium leading-tight mb-2">"{quote.text}"</p>
-               <p className="text-1.5xl text-zinc-500 font-bold uppercase tracking-wider">— {quote.character}, <span className="text-lime-400">{quote.source}</span></p>
+            <div className="relative z-10 mt-4 flex items-center justify-between border-t border-zinc-800 pt-3">
+               <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">Weekly load</span>
+               <span className="text-sm font-black text-lime-400">{currentVol} pts</span>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-4">
@@ -712,16 +715,218 @@ const TimerView = () => {
 };
 
 const ProjectFormView = ({ initialData, onSave, onBack }: { initialData?: Project, onSave: (p: Project) => Promise<void>, onBack: () => void }) => {
-  const [formData, setFormData] = useState<Partial<Project>>(initialData || { name: '', grade: '6a', angle: 40, totalMoves: 0, style: [], status: 'active', attempts: [], notes: '', image: undefined });
+  const [formData, setFormData] = useState<Partial<Project>>(initialData || {
+    name: '', grade: '6a', angle: 40, totalMoves: 0, style: [], status: 'active',
+    attempts: [], notes: '', image: undefined, holdColor: '', holdMarkers: [],
+  });
   const [isSaving, setIsSaving] = useState(false);
-  const [tagInput, setTagInput] = useState(''); const fileInputRef = useRef<HTMLInputElement>(null);
-  const handleSubmit = async (e: React.FormEvent) => { e.preventDefault(); if (isSaving) return; setIsSaving(true); try { await onSave({ id: initialData?.id || '', attempts: [], ...formData } as Project); } finally { setIsSaving(false); } };
-  const toggleStyle = (s: string) => { const current = formData.style || []; if (current.includes(s)) setFormData({ ...formData, style: current.filter(x => x !== s) }); else setFormData({ ...formData, style: [...current, s] }); };
-  const handleAddTag = () => { const trimmed = tagInput.trim(); if (trimmed && !(formData.style || []).includes(trimmed)) { setFormData({ ...formData, style: [...(formData.style || []), trimmed] }); } setTagInput(''); };
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (file) { const reader = new FileReader(); reader.onload = (event) => { const img = new Image(); img.onload = () => { const canvas = document.createElement('canvas'); let width = img.width; let height = img.height; const MAX_SIZE = 800; if (width > height) { if (width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; } } else { if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; } } canvas.width = width; canvas.height = height; const ctx = canvas.getContext('2d'); ctx?.drawImage(img, 0, 0, width, height); setFormData({ ...formData, image: canvas.toDataURL('image/jpeg', 0.6) }); }; img.src = event.target?.result as string; }; reader.readAsDataURL(file); }
+  const [tagInput, setTagInput] = useState('');
+  const [formError, setFormError] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (isSaving) return;
+    const markers = formData.holdMarkers || [];
+    if (formData.image && (!formData.holdColor || !markers.some((marker) => marker.kind === 'start') || !markers.some((marker) => marker.kind === 'finish'))) {
+      setFormError('Choose the route color and mark both Start and Finish on the photo before saving.');
+      return;
+    }
+    setFormError('');
+    setIsSaving(true);
+    try {
+      await onSave({
+        ...formData,
+        id: initialData?.id || '',
+        attempts: initialData?.attempts || [],
+        holdMarkers: markers,
+      } as Project);
+    } finally {
+      setIsSaving(false);
+    }
   };
-  return (<div className="min-h-screen bg-zinc-950 p-6 pb-24"><header className="flex items-center gap-4 mb-8 pt-4"><button onClick={onBack} className="p-2 -ml-2 bg-zinc-900 rounded-full text-zinc-400"><ArrowLeft className="w-6 h-6" /></button><h1 className="text-xl font-black text-white">{initialData ? 'EDIT PROJECT' : 'NEW PROJECT'}</h1></header><form onSubmit={handleSubmit} className="space-y-6"><div onClick={() => fileInputRef.current?.click()} className="w-full h-48 rounded-2xl border-2 border-dashed border-zinc-800 flex flex-col items-center justify-center cursor-pointer hover:border-lime-400/50 hover:bg-zinc-900 transition-all relative overflow-hidden group"><input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />{formData.image ? (<><img src={getProjectImageUrl(formData.image)} className="absolute inset-0 w-full h-full object-cover opacity-50 group-hover:opacity-30 transition-opacity" alt="Preview" /><div className="relative z-10 bg-black/50 p-2 rounded-full backdrop-blur-sm"><Camera className="w-6 h-6 text-white" /></div></>) : (<><div className="bg-zinc-900 p-4 rounded-full mb-3 group-hover:scale-110 transition-transform"><Camera className="w-8 h-8 text-zinc-500" /></div><span className="text-xs font-bold text-zinc-500 uppercase">Tap to add photo</span></>)}</div><div><label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Project Name</label><input type="text" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-white focus:border-lime-400 outline-none transition-colors" placeholder="e.g. The Pink One" /></div><div className="grid grid-cols-2 gap-4"><div><label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Grade</label><select value={formData.grade} onChange={e => setFormData({...formData, grade: e.target.value})} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-white focus:border-lime-400 outline-none appearance-none">{FRENCH_GRADES.map(g => <option key={g} value={g}>{g}</option>)}</select></div><div><label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Angle ({formData.angle}°)</label><input type="range" min="0" max="60" step="5" value={formData.angle} onChange={e => setFormData({...formData, angle: parseInt(e.target.value)})} className="w-full h-12 accent-lime-400"/></div></div><div><label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Total Moves</label><input type="number" value={formData.totalMoves || ''} onChange={e => setFormData({...formData, totalMoves: parseInt(e.target.value)})} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-4 text-white focus:border-lime-400 outline-none" placeholder="0"/></div><div><label className="block text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Style Tags</label><div className="flex flex-wrap gap-2 mb-3">{(formData.style || []).map(s => (<button type="button" key={s} onClick={() => toggleStyle(s)} className="px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider border bg-lime-400 border-lime-400 text-black flex items-center gap-1 hover:bg-orange-500 hover:border-orange-500 hover:text-white group transition-colors">{s} <X className="w-3 h-3 group-hover:text-white text-black/50" /></button>))}</div><div className="flex gap-2 mb-4"><div className="relative flex-1"><Tag className="absolute left-3 top-3.5 w-4 h-4 text-zinc-500" /><input type="text" value={tagInput} onChange={(e) => setTagInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddTag(); } }} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-3 pl-10 pr-4 text-white text-sm focus:border-lime-400 outline-none" placeholder="Add custom tag..." /></div><button type="button" onClick={handleAddTag} className="bg-zinc-800 text-white rounded-xl px-4 hover:bg-zinc-700 active:bg-zinc-600"><Plus className="w-5 h-5" /></button></div><div className="flex flex-wrap gap-2"><span className="text-[10px] font-bold text-zinc-600 uppercase w-full">Suggestions:</span>{PRESET_STYLES.filter(s => !(formData.style || []).includes(s)).map(s => (<button type="button" key={s} onClick={() => toggleStyle(s)} className="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border border-zinc-800 text-zinc-500 hover:border-zinc-600 hover:bg-zinc-900">{s}</button>))}</div></div><button type="submit" disabled={isSaving} className="w-full bg-lime-400 text-black font-bold uppercase tracking-wider p-4 rounded-xl mt-8 hover:bg-lime-300 active:scale-[0.98] transition-all disabled:opacity-50">{isSaving ? 'Saving…' : 'Save Project'}</button></form></div>);
+
+  const toggleStyle = (style: string) => {
+    setFormData((current) => {
+      const selected = current.style || [];
+      return {
+        ...current,
+        style: selected.includes(style) ? selected.filter((item) => item !== style) : [...selected, style],
+      };
+    });
+  };
+
+  const handleAddTag = () => {
+    const trimmed = tagInput.trim();
+    if (trimmed && !(formData.style || []).includes(trimmed)) {
+      setFormData((current) => ({ ...current, style: [...(current.style || []), trimmed] }));
+    }
+    setTagInput('');
+  };
+
+  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onerror = () => setFormError('Could not read this photo. Try another image.');
+    reader.onload = (loadEvent) => {
+      const photo = new Image();
+      photo.onerror = () => setFormError('Could not open this photo. Try another image.');
+      photo.onload = () => {
+        const canvas = document.createElement('canvas');
+        let width = photo.width;
+        let height = photo.height;
+        const maximumSize = 800;
+        if (width > height && width > maximumSize) {
+          height *= maximumSize / width;
+          width = maximumSize;
+        } else if (height >= width && height > maximumSize) {
+          width *= maximumSize / height;
+          height = maximumSize;
+        }
+        canvas.width = Math.round(width);
+        canvas.height = Math.round(height);
+        const context = canvas.getContext('2d');
+        if (!context) {
+          setFormError('Could not prepare this photo. Try another image.');
+          return;
+        }
+        context.drawImage(photo, 0, 0, canvas.width, canvas.height);
+        setFormData((current) => ({
+          ...current,
+          image: canvas.toDataURL('image/jpeg', 0.72),
+          holdMarkers: [],
+        }));
+        setFormError('');
+      };
+      photo.src = loadEvent.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+    event.target.value = '';
+  };
+
+  const handleMarkersChange = useCallback((holdMarkers: HoldMarker[]) => {
+    setFormData((current) => ({ ...current, holdMarkers }));
+    setFormError('');
+  }, []);
+
+  const addCustomColor = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData((current) => ({ ...current, holdColor: event.target.value }));
+    setFormError('');
+  };
+
+  return (
+    <div className="min-h-screen bg-zinc-950 p-6 pb-24">
+      <header className="flex items-center gap-4 mb-8 pt-4">
+        <button onClick={onBack} className="p-2 -ml-2 bg-zinc-900 rounded-full text-zinc-400"><ArrowLeft className="w-6 h-6" /></button>
+        <h1 className="text-xl font-black text-white">{initialData ? 'EDIT PROJECT' : 'NEW PROJECT'}</h1>
+      </header>
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <div
+          onClick={() => fileInputRef.current?.click()}
+          className="relative flex h-48 w-full cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-zinc-800 transition-all hover:border-lime-400/50 hover:bg-zinc-900 group"
+        >
+          <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
+          {formData.image ? (
+            <>
+              <img src={getProjectImageUrl(formData.image)} className="absolute inset-0 h-full w-full object-cover opacity-50 transition-opacity group-hover:opacity-30" alt="Route preview" />
+              <div className="relative z-10 rounded-full bg-black/50 p-2 backdrop-blur-sm"><Camera className="h-6 w-6 text-white" /></div>
+              <span className="absolute bottom-3 z-10 rounded bg-black/60 px-2 py-1 text-[10px] font-bold uppercase text-white">Tap to change photo</span>
+            </>
+          ) : (
+            <>
+              <div className="mb-3 rounded-full bg-zinc-900 p-4 transition-transform group-hover:scale-110"><Camera className="h-8 w-8 text-zinc-500" /></div>
+              <span className="text-xs font-bold uppercase text-zinc-500">Tap to add photo</span>
+            </>
+          )}
+        </div>
+
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-zinc-500">Project Name</label>
+          <input type="text" required value={formData.name || ''} onChange={(event) => setFormData({ ...formData, name: event.target.value })} className="w-full rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-white outline-none transition-colors focus:border-lime-400" placeholder="e.g. The Pink One" />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-zinc-500">Route Color</label>
+          <div className="flex flex-wrap items-center gap-3">
+            {HOLD_COLOR_OPTIONS.map((option) => (
+              <button
+                key={option.hex}
+                type="button"
+                onClick={() => setFormData((current) => ({ ...current, holdColor: option.hex }))}
+                aria-label={option.label}
+                title={option.label}
+                className={'h-9 w-9 rounded-full border-2 transition-transform ' + (formData.holdColor === option.hex ? 'scale-110 border-white ring-2 ring-lime-400 ring-offset-2 ring-offset-zinc-950' : 'border-zinc-700 hover:scale-105')}
+                style={{ backgroundColor: option.hex }}
+              />
+            ))}
+            <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-xs font-bold text-zinc-300">
+              <span>Custom</span>
+              <input type="color" aria-label="Custom route color" value={formData.holdColor || '#ef4444'} onChange={addCustomColor} className="h-6 w-7 cursor-pointer border-0 bg-transparent p-0" />
+            </label>
+            {formData.holdColor && <span className="text-xs font-bold uppercase text-zinc-500">{HOLD_COLOR_OPTIONS.find((option) => option.hex === formData.holdColor)?.label || 'Custom color'}</span>}
+          </div>
+          {!formData.image && <p className="mt-2 text-xs text-zinc-600">Add a photo to scan and mark the route.</p>}
+        </div>
+
+        {formData.image && (
+          <HoldAnnotator
+            image={getProjectImageUrl(formData.image) || formData.image}
+            color={formData.holdColor || ''}
+            markers={formData.holdMarkers || []}
+            onChange={handleMarkersChange}
+          />
+        )}
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-zinc-500">Difficulty (French Grade)</label>
+            <select value={formData.grade || '6a'} onChange={(event) => setFormData({ ...formData, grade: event.target.value })} className="w-full appearance-none rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-white outline-none focus:border-lime-400">
+              {FRENCH_GRADES.map((grade) => <option key={grade} value={grade}>{grade}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-zinc-500">Angle ({formData.angle}°)</label>
+            <input type="range" min="0" max="60" step="5" value={formData.angle || 0} onChange={(event) => setFormData({ ...formData, angle: parseInt(event.target.value, 10) })} className="h-12 w-full accent-lime-400" />
+          </div>
+        </div>
+
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-zinc-500">Total Moves</label>
+          <input type="number" min="0" value={formData.totalMoves || ''} onChange={(event) => setFormData({ ...formData, totalMoves: parseInt(event.target.value, 10) || 0 })} className="w-full rounded-xl border border-zinc-800 bg-zinc-900 p-4 text-white outline-none focus:border-lime-400" placeholder="0" />
+        </div>
+
+        <div>
+          <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-zinc-500">Style Tags</label>
+          <div className="mb-3 flex flex-wrap gap-2">
+            {(formData.style || []).map((style) => (
+              <button type="button" key={style} onClick={() => toggleStyle(style)} className="group flex items-center gap-1 rounded-full border border-lime-400 bg-lime-400 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-black transition-colors hover:border-orange-500 hover:bg-orange-500 hover:text-white">
+                {style} <X className="h-3 w-3 text-black/50 group-hover:text-white" />
+              </button>
+            ))}
+          </div>
+          <div className="mb-4 flex gap-2">
+            <div className="relative flex-1">
+              <Tag className="absolute left-3 top-3.5 h-4 w-4 text-zinc-500" />
+              <input type="text" value={tagInput} onChange={(event) => setTagInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); handleAddTag(); } }} className="w-full rounded-xl border border-zinc-800 bg-zinc-900 py-3 pl-10 pr-4 text-sm text-white outline-none focus:border-lime-400" placeholder="Add custom tag..." />
+            </div>
+            <button type="button" onClick={handleAddTag} className="rounded-xl bg-zinc-800 px-4 text-white hover:bg-zinc-700"><Plus className="h-5 w-5" /></button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <span className="w-full text-[10px] font-bold uppercase text-zinc-600">Suggestions:</span>
+            {PRESET_STYLES.filter((style) => !(formData.style || []).includes(style)).map((style) => (
+              <button type="button" key={style} onClick={() => toggleStyle(style)} className="rounded-full border border-zinc-800 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-zinc-500 hover:border-zinc-600 hover:bg-zinc-900">{style}</button>
+            ))}
+          </div>
+        </div>
+
+        {formError && <p role="alert" className="rounded-xl border border-orange-500/30 bg-orange-500/10 p-3 text-sm text-orange-200">{formError}</p>}
+        <button type="submit" disabled={isSaving} className="mt-8 w-full rounded-xl bg-lime-400 p-4 font-bold uppercase tracking-wider text-black transition-all hover:bg-lime-300 active:scale-[0.98] disabled:opacity-50">
+          {isSaving ? 'Saving...' : 'Save Project'}
+        </button>
+      </form>
+    </div>
+  );
 };
 
 const ProjectDetailView = ({ project, onBack, onEdit, onDelete, onAddAttempt, onUpdateNotes }: { project: Project, onBack: () => void, onEdit: () => void, onDelete: () => void, onAddAttempt: (a: Attempt) => Promise<boolean>, onUpdateNotes: (n: string) => void }) => {
@@ -735,7 +940,7 @@ const ProjectDetailView = ({ project, onBack, onEdit, onDelete, onAddAttempt, on
     if (saved) setShowLogModal(false);
     setIsSavingAttempt(false);
   };
-  return (<div className="min-h-screen bg-zinc-950 pb-24 relative"><div className="h-96 bg-gradient-to-b from-zinc-800 to-zinc-950 relative group">{project.image ? (<img src={getProjectImageUrl(project.image)} className="w-full h-full object-cover opacity-60 mask-image-b-fade" alt="" />) : (<div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-700"><ImageIcon className="w-16 h-16 opacity-20" /></div>)}<div className="absolute top-0 left-0 w-full p-6 flex justify-between items-start z-10 pt-8 bg-gradient-to-b from-black/80 to-transparent pb-12"><button onClick={onBack} className="p-2 bg-black/50 backdrop-blur rounded-full text-white hover:bg-zinc-800"><ArrowLeft /></button><div className="flex gap-2">{project.image && (<button onClick={() => setShowImage(true)} className="p-2 bg-black/50 backdrop-blur rounded-full text-white hover:bg-zinc-800"><Maximize2 className="w-5 h-5" /></button>)}<button onClick={onDelete} className="p-2 bg-black/50 backdrop-blur rounded-full text-orange-500 hover:bg-orange-500/20"><Trash2 className="w-5 h-5" /></button><button onClick={onEdit} className="p-2 bg-black/50 backdrop-blur rounded-full text-white hover:bg-zinc-800"><Pencil className="w-5 h-5" /></button></div></div><div className="absolute bottom-0 left-0 w-full p-6 bg-gradient-to-t from-zinc-950 via-zinc-950/80 to-transparent pt-24"><div className="flex items-end justify-between"><div><h1 className="text-4xl font-black text-white leading-none mb-3 drop-shadow-lg">{project.name}</h1><div className="flex items-center gap-3"><span className="px-3 py-1 bg-lime-400 text-black text-xs font-bold rounded-md">{project.grade}</span><span className="text-zinc-400 text-xs font-bold uppercase">{project.angle}° Wall</span>{project.style.map(s => (<span key={s} className="text-zinc-500 text-[10px] font-bold uppercase border border-zinc-800 px-2 py-0.5 rounded">{s}</span>))}</div></div></div></div></div><div className="p-6 space-y-8 -mt-4 relative z-10"><button onClick={() => setShowLogModal(true)} className="w-full bg-lime-400 text-black font-black uppercase tracking-wider p-4 rounded-2xl shadow-[0_0_20px_rgba(163,230,53,0.3)] hover:shadow-[0_0_30px_rgba(163,230,53,0.5)] transition-all active:scale-[0.98]">Log Attempt</button><div className="grid grid-cols-3 gap-4"><div className="bg-zinc-900 p-4 rounded-2xl border border-zinc-800 text-center"><div className="text-zinc-500 text-[10px] font-bold uppercase mb-1">Attempts</div><div className="text-xl font-black text-white">{project.attempts.length}</div></div><div className="bg-zinc-900 p-4 rounded-2xl border border-zinc-800 text-center"><div className="text-zinc-500 text-[10px] font-bold uppercase mb-1">High Point</div><div className="text-xl font-black text-lime-400">{Math.max(0, ...project.attempts.map(a => a.progress))}%</div></div><div className="bg-zinc-900 p-4 rounded-2xl border border-zinc-800 text-center"><div className="text-zinc-500 text-[10px] font-bold uppercase mb-1">Status</div><div className={`text-xl font-black uppercase ${project.status === 'sent' ? 'text-lime-400' : 'text-zinc-300'}`}>{project.status}</div></div></div><div><h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">Beta & Notes</h3><textarea value={notes} onChange={(e) => setNotes(e.target.value)} onBlur={() => { if (notes !== (project.notes || '')) onUpdateNotes(notes); }} className="w-full bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4 text-zinc-300 text-sm min-h-[100px] focus:outline-none focus:border-lime-400/50" placeholder="Write down your sequence..." /></div><div><h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">History</h3><div className="space-y-3">{[...project.attempts].reverse().map((attempt) => (<div key={attempt.id} className="flex items-center justify-between p-4 bg-zinc-900 rounded-2xl border border-zinc-800"><div className="flex items-center gap-3">{attempt.outcome === 'send' ? <CheckCircle className="text-lime-400 w-5 h-5" /> : <XCircle className="text-zinc-600 w-5 h-5" />}<div><div className="text-sm font-bold text-zinc-200">{new Date(attempt.date).toLocaleDateString()}</div><div className="text-xs text-zinc-500">{attempt.outcome === 'send' ? 'Sent!' : `Fall on move ${attempt.fallMove} (${attempt.failureReason})`}</div></div></div><div className="text-xs font-mono text-zinc-600">{attempt.progress}%</div></div>))}{project.attempts.length === 0 && <p className="text-center text-zinc-600 text-sm py-4">No attempts logged yet.</p>}</div></div></div>{showLogModal && (<div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4"><div className="bg-zinc-900 w-full max-w-md rounded-3xl p-6 border border-zinc-800 space-y-6"><div className="flex justify-between items-center"><h2 className="text-xl font-black text-white">LOG ATTEMPT</h2><button onClick={() => setShowLogModal(false)}><X className="text-zinc-500" /></button></div><div className="flex gap-2"><button onClick={() => setNewAttempt({...newAttempt, outcome: 'send'})} className={`flex-1 p-4 rounded-xl font-bold border-2 transition-all ${newAttempt.outcome === 'send' ? 'border-lime-400 bg-lime-400/20 text-lime-400' : 'border-zinc-800 text-zinc-500'}`}>SEND</button><button onClick={() => setNewAttempt({...newAttempt, outcome: 'fall'})} className={`flex-1 p-4 rounded-xl font-bold border-2 transition-all ${newAttempt.outcome === 'fall' ? 'border-orange-500 bg-orange-500/20 text-orange-500' : 'border-zinc-800 text-zinc-500'}`}>FALL</button></div>{newAttempt.outcome === 'fall' && (<div className="space-y-4 animate-in slide-in-from-top-2"><div><label className="text-xs font-bold text-zinc-500 uppercase">Fall Move / Total ({project.totalMoves})</label><input type="number" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-white mt-1" value={newAttempt.fallMove} onChange={(e) => { const move = parseInt(e.target.value); const progress = project.totalMoves > 0 ? Math.round((move / project.totalMoves) * 100) : 0; setNewAttempt({...newAttempt, fallMove: move, progress}); }} /></div><div><label className="text-xs font-bold text-zinc-500 uppercase">Reason</label><div className="flex flex-wrap gap-2 mt-1">{['power', 'technique', 'beta', 'slip', 'mental'].map(r => (<button key={r} onClick={() => setNewAttempt({...newAttempt, failureReason: r as any})} className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${newAttempt.failureReason === r ? 'bg-zinc-100 text-black border-white' : 'border-zinc-800 text-zinc-500'}`}>{r}</button>))}</div></div></div>)}<button onClick={() => void handleSaveAttempt()} disabled={isSavingAttempt} className="w-full bg-white text-black font-bold p-4 rounded-xl hover:bg-zinc-200 disabled:opacity-50">{isSavingAttempt ? 'Saving…' : 'SAVE ENTRY'}</button></div></div>)}{showImage && project.image && (<div className="fixed inset-0 z-[60] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4 animate-in fade-in" onClick={() => setShowImage(false)}><button className="absolute top-6 right-6 p-2 bg-zinc-800 rounded-full text-white"><X className="w-6 h-6" /></button><img src={getProjectImageUrl(project.image)} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" onClick={(e) => e.stopPropagation()} /></div>)}</div>);
+  return (<div className="min-h-screen bg-zinc-950 pb-24 relative"><div className="h-96 bg-gradient-to-b from-zinc-800 to-zinc-950 relative group">{project.image ? (<img src={getProjectImageUrl(project.image)} className="w-full h-full object-cover opacity-60 mask-image-b-fade" alt="" />) : (<div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-700"><ImageIcon className="w-16 h-16 opacity-20" /></div>)}<div className="absolute top-0 left-0 w-full p-6 flex justify-between items-start z-10 pt-8 bg-gradient-to-b from-black/80 to-transparent pb-12"><button onClick={onBack} className="p-2 bg-black/50 backdrop-blur rounded-full text-white hover:bg-zinc-800"><ArrowLeft /></button><div className="flex gap-2">{project.image && (<button onClick={() => setShowImage(true)} className="p-2 bg-black/50 backdrop-blur rounded-full text-white hover:bg-zinc-800"><Maximize2 className="w-5 h-5" /></button>)}<button onClick={onDelete} className="p-2 bg-black/50 backdrop-blur rounded-full text-orange-500 hover:bg-orange-500/20"><Trash2 className="w-5 h-5" /></button><button onClick={onEdit} className="p-2 bg-black/50 backdrop-blur rounded-full text-white hover:bg-zinc-800"><Pencil className="w-5 h-5" /></button></div></div><div className="absolute bottom-0 left-0 w-full p-6 bg-gradient-to-t from-zinc-950 via-zinc-950/80 to-transparent pt-24"><div className="flex items-end justify-between"><div><h1 className="text-4xl font-black text-white leading-none mb-3 drop-shadow-lg">{project.name}</h1><div className="flex items-center gap-3"><span className="px-3 py-1 bg-lime-400 text-black text-xs font-bold rounded-md">{project.grade}</span><span className="text-zinc-400 text-xs font-bold uppercase">{project.angle}° Wall</span>{project.style.map(s => (<span key={s} className="text-zinc-500 text-[10px] font-bold uppercase border border-zinc-800 px-2 py-0.5 rounded">{s}</span>))}</div></div></div></div></div><div className="p-6 space-y-8 -mt-4 relative z-10">{project.image && (project.holdMarkers || []).length > 0 && (<section className="space-y-3"><div className="flex items-center justify-between"><h3 className="text-xs font-bold uppercase tracking-wider text-zinc-500">Route Beta</h3>{project.holdColor && (<span className="flex items-center gap-2 text-xs font-bold uppercase text-zinc-400"><span className="h-3 w-3 rounded-full border border-white/50" style={{ backgroundColor: project.holdColor }} />Hold color</span>)}</div><HoldPhotoPreview image={getProjectImageUrl(project.image) || project.image} color={project.holdColor} markers={project.holdMarkers || []} /></section>)}<button onClick={() => setShowLogModal(true)} className="w-full bg-lime-400 text-black font-black uppercase tracking-wider p-4 rounded-2xl shadow-[0_0_20px_rgba(163,230,53,0.3)] hover:shadow-[0_0_30px_rgba(163,230,53,0.5)] transition-all active:scale-[0.98]">Log Attempt</button><div className="grid grid-cols-3 gap-4"><div className="bg-zinc-900 p-4 rounded-2xl border border-zinc-800 text-center"><div className="text-zinc-500 text-[10px] font-bold uppercase mb-1">Attempts</div><div className="text-xl font-black text-white">{project.attempts.length}</div></div><div className="bg-zinc-900 p-4 rounded-2xl border border-zinc-800 text-center"><div className="text-zinc-500 text-[10px] font-bold uppercase mb-1">High Point</div><div className="text-xl font-black text-lime-400">{Math.max(0, ...project.attempts.map(a => a.progress))}%</div></div><div className="bg-zinc-900 p-4 rounded-2xl border border-zinc-800 text-center"><div className="text-zinc-500 text-[10px] font-bold uppercase mb-1">Status</div><div className={`text-xl font-black uppercase ${project.status === 'sent' ? 'text-lime-400' : 'text-zinc-300'}`}>{project.status}</div></div></div><div><h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">Beta & Notes</h3><textarea value={notes} onChange={(e) => setNotes(e.target.value)} onBlur={() => { if (notes !== (project.notes || '')) onUpdateNotes(notes); }} className="w-full bg-zinc-900/50 border border-zinc-800 rounded-2xl p-4 text-zinc-300 text-sm min-h-[100px] focus:outline-none focus:border-lime-400/50" placeholder="Write down your sequence..." /></div><div><h3 className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-3">History</h3><div className="space-y-3">{[...project.attempts].reverse().map((attempt) => (<div key={attempt.id} className="flex items-center justify-between p-4 bg-zinc-900 rounded-2xl border border-zinc-800"><div className="flex items-center gap-3">{attempt.outcome === 'send' ? <CheckCircle className="text-lime-400 w-5 h-5" /> : <XCircle className="text-zinc-600 w-5 h-5" />}<div><div className="text-sm font-bold text-zinc-200">{new Date(attempt.date).toLocaleDateString()}</div><div className="text-xs text-zinc-500">{attempt.outcome === 'send' ? 'Sent!' : `Fall on move ${attempt.fallMove} (${attempt.failureReason})`}</div></div></div><div className="text-xs font-mono text-zinc-600">{attempt.progress}%</div></div>))}{project.attempts.length === 0 && <p className="text-center text-zinc-600 text-sm py-4">No attempts logged yet.</p>}</div></div></div>{showLogModal && (<div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-4"><div className="bg-zinc-900 w-full max-w-md rounded-3xl p-6 border border-zinc-800 space-y-6"><div className="flex justify-between items-center"><h2 className="text-xl font-black text-white">LOG ATTEMPT</h2><button onClick={() => setShowLogModal(false)}><X className="text-zinc-500" /></button></div><div className="flex gap-2"><button onClick={() => setNewAttempt({...newAttempt, outcome: 'send'})} className={`flex-1 p-4 rounded-xl font-bold border-2 transition-all ${newAttempt.outcome === 'send' ? 'border-lime-400 bg-lime-400/20 text-lime-400' : 'border-zinc-800 text-zinc-500'}`}>SEND</button><button onClick={() => setNewAttempt({...newAttempt, outcome: 'fall'})} className={`flex-1 p-4 rounded-xl font-bold border-2 transition-all ${newAttempt.outcome === 'fall' ? 'border-orange-500 bg-orange-500/20 text-orange-500' : 'border-zinc-800 text-zinc-500'}`}>FALL</button></div>{newAttempt.outcome === 'fall' && (<div className="space-y-4 animate-in slide-in-from-top-2"><div><label className="text-xs font-bold text-zinc-500 uppercase">Fall Move / Total ({project.totalMoves})</label><input type="number" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-white mt-1" value={newAttempt.fallMove} onChange={(e) => { const move = parseInt(e.target.value); const progress = project.totalMoves > 0 ? Math.round((move / project.totalMoves) * 100) : 0; setNewAttempt({...newAttempt, fallMove: move, progress}); }} /></div><div><label className="text-xs font-bold text-zinc-500 uppercase">Reason</label><div className="flex flex-wrap gap-2 mt-1">{['power', 'technique', 'beta', 'slip', 'mental'].map(r => (<button key={r} onClick={() => setNewAttempt({...newAttempt, failureReason: r as any})} className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${newAttempt.failureReason === r ? 'bg-zinc-100 text-black border-white' : 'border-zinc-800 text-zinc-500'}`}>{r}</button>))}</div></div></div>)}<button onClick={() => void handleSaveAttempt()} disabled={isSavingAttempt} className="w-full bg-white text-black font-bold p-4 rounded-xl hover:bg-zinc-200 disabled:opacity-50">{isSavingAttempt ? 'Saving…' : 'SAVE ENTRY'}</button></div></div>)}{showImage && project.image && (<div className="fixed inset-0 z-[60] bg-black/95 backdrop-blur-xl flex items-center justify-center p-4 animate-in fade-in" onClick={() => setShowImage(false)}><button className="absolute top-6 right-6 p-2 bg-zinc-800 rounded-full text-white"><X className="w-6 h-6" /></button><img src={getProjectImageUrl(project.image)} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" onClick={(e) => e.stopPropagation()} /></div>)}</div>);
 };
 
 const BottomNav = ({ activeTab, onTabChange }: { activeTab: Tab, onTabChange: (t: Tab) => void }) => {
