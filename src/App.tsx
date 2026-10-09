@@ -826,7 +826,7 @@ const ProjectFormView = ({ initialData, onSave, onBack }: { initialData?: Projec
           onClick={() => fileInputRef.current?.click()}
           className="relative flex h-48 w-full cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-zinc-800 transition-all hover:border-lime-400/50 hover:bg-zinc-900 group"
         >
-          <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
+          <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onClick={(event) => event.stopPropagation()} onChange={handleImageUpload} />
           {formData.image ? (
             <>
               <img src={getProjectImageUrl(formData.image)} className="absolute inset-0 h-full w-full object-cover opacity-50 transition-opacity group-hover:opacity-30" alt="Route preview" />
