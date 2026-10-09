@@ -1,73 +1,30 @@
-# React + TypeScript + Vite
+# SKALYK
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Журнал боулдеринговых трасс на React, Vite и Supabase. Приложение использует бесплатный план Supabase и сохраняет небольшую локальную копию списка трасс для чтения при временной недоступности базы.
 
-Currently, two official plugins are available:
+## Подключение Supabase
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+1. В Supabase откройте **SQL Editor** и выполните файл [`supabase/migrations/20261009000000_database_stability.sql`](supabase/migrations/20261009000000_database_stability.sql). Миграция создаёт таблицы при необходимости, включает доступ только к данным владельца, добавляет индексы и настраивает бесплатное файловое хранилище для фотографий.
+2. В корне проекта создайте `.env.local`:
 
-## React Compiler
+   ```env
+   VITE_SUPABASE_URL=https://ВАШ-ПРОЕКТ.supabase.co
+   VITE_SUPABASE_ANON_KEY=ВАШ_ПУБЛИЧНЫЙ_ANON_КЛЮЧ
+   ```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+3. Для публикации через GitHub Pages добавьте те же значения в среду, из которой запускается `npm run deploy`, и пересоберите приложение. Vite встраивает эти переменные в статическую сборку. Используйте только публичный `anon`/`publishable` ключ; `service_role` ключ нельзя помещать в приложение.
 
-## Expanding the ESLint configuration
+## Что изменено для базы
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- Новые фотографии загружаются в Supabase Storage, а в таблице хранится только короткий путь к файлу.
+- Существующие фотографии в формате base64 продолжают отображаться; при следующем сохранении проекта они переносятся в Storage.
+- Таблицы индексированы по пользователю, проекту и дате. RLS ограничивает чтение и изменение записей владельцем.
+- При сетевой ошибке список трасс восстанавливается из кэша браузера текущего пользователя и доступна кнопка повтора.
+- Заметки записываются после завершения редактирования, чтобы не отправлять запрос в базу на каждый символ.
+- Вход показывает причину отказа и всегда снимает состояние загрузки. Адрес почты нормализуется перед проверкой.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Бесплатный план
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+Бесплатный Supabase может автоматически приостанавливать проект после периода низкой активности. Если приложение сообщает, что проект приостановлен, владелец должен возобновить его в Supabase Dashboard. Приложение не может снять это ограничение само. Неактивность также отличается от ошибки логина: если проект работает, проверьте, что введён именно адрес почты зарегистрированного аккаунта и что подтверждена почта, если подтверждение включено.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Фотографии и база используют квоты бесплатного проекта. Перенос изображений уменьшает расход места в Postgres, но не отменяет ограничения бесплатного тарифа.
