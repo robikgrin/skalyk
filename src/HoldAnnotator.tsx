@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { detectColoredHolds } from './climbingHoldModel';
 
 export type HoldKind = 'hold' | 'start' | 'finish';
 
@@ -6,6 +7,7 @@ export interface HoldMarker {
   x: number;
   y: number;
   kind: HoldKind;
+  contour?: Array<{ x: number; y: number }>;
 }
 
 export const HOLD_COLOR_OPTIONS = [
@@ -27,136 +29,6 @@ interface HoldAnnotatorProps {
   onChange: (markers: HoldMarker[]) => void;
 }
 
-interface ColorSample {
-  hue: number;
-  saturation: number;
-  value: number;
-}
-
-const hexToColorSample = (hex: string): ColorSample | null => {
-  const value = hex.replace('#', '');
-  if (!/^[\da-f]{3}$|^[\da-f]{6}$/i.test(value)) return null;
-  const fullHex = value.length === 3 ? value.split('').map((part) => part + part).join('') : value;
-  const red = parseInt(fullHex.slice(0, 2), 16) / 255;
-  const green = parseInt(fullHex.slice(2, 4), 16) / 255;
-  const blue = parseInt(fullHex.slice(4, 6), 16) / 255;
-  const max = Math.max(red, green, blue);
-  const min = Math.min(red, green, blue);
-  const delta = max - min;
-  let hue = 0;
-
-  if (delta > 0) {
-    if (max === red) hue = ((green - blue) / delta) % 6;
-    else if (max === green) hue = (blue - red) / delta + 2;
-    else hue = (red - green) / delta + 4;
-    hue *= 60;
-    if (hue < 0) hue += 360;
-  }
-
-  return { hue, saturation: max === 0 ? 0 : delta / max, value: max };
-};
-
-const pixelMatchesColor = (red: number, green: number, blue: number, target: ColorSample) => {
-  const max = Math.max(red, green, blue);
-  const min = Math.min(red, green, blue);
-  const delta = max - min;
-  const value = max / 255;
-  const saturation = max === 0 ? 0 : delta / max;
-
-  if (target.saturation < 0.2) {
-    if (target.value > 0.75) return value > 0.72 && saturation < 0.32;
-    if (target.value < 0.2) return value < 0.22 && saturation < 0.45;
-    return Math.abs(value - target.value) < 0.16 && saturation < 0.28;
-  }
-
-  if (saturation < 0.24 || value < 0.1 || value > 0.98) return false;
-  let hue = 0;
-  if (delta > 0) {
-    if (max === red) hue = ((green - blue) / delta) % 6;
-    else if (max === green) hue = (blue - red) / delta + 2;
-    else hue = (red - green) / delta + 4;
-    hue *= 60;
-    if (hue < 0) hue += 360;
-  }
-  const hueDistance = Math.min(Math.abs(hue - target.hue), 360 - Math.abs(hue - target.hue));
-  return hueDistance <= 22;
-};
-
-const findColorRegions = (pixels: Uint8ClampedArray, width: number, height: number, color: string) => {
-  const target = hexToColorSample(color);
-  if (!target) return [] as Array<{ x: number; y: number; area: number }>;
-
-  const total = width * height;
-  const mask = new Uint8Array(total);
-  for (let index = 0; index < total; index += 1) {
-    const pixelIndex = index * 4;
-    if (pixelMatchesColor(pixels[pixelIndex], pixels[pixelIndex + 1], pixels[pixelIndex + 2], target)) {
-      mask[index] = 1;
-    }
-  }
-
-  const visited = new Uint8Array(total);
-  const queue = new Int32Array(total);
-  const minimumArea = Math.max(18, Math.floor(total * 0.00006));
-  const maximumArea = Math.floor(total * 0.12);
-  const regions: Array<{ x: number; y: number; area: number }> = [];
-
-  for (let index = 0; index < total; index += 1) {
-    if (!mask[index] || visited[index]) continue;
-
-    let head = 0;
-    let tail = 0;
-    queue[tail] = index;
-    tail += 1;
-    visited[index] = 1;
-    let area = 0;
-    let sumX = 0;
-    let sumY = 0;
-    let minX = width;
-    let minY = height;
-    let maxX = 0;
-    let maxY = 0;
-
-    while (head < tail) {
-      const current = queue[head];
-      head += 1;
-      const x = current % width;
-      const y = Math.floor(current / width);
-      area += 1;
-      sumX += x;
-      sumY += y;
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-
-      for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
-        for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
-          if (offsetX === 0 && offsetY === 0) continue;
-          const nextX = x + offsetX;
-          const nextY = y + offsetY;
-          if (nextX < 0 || nextX >= width || nextY < 0 || nextY >= height) continue;
-          const next = nextY * width + nextX;
-          if (!mask[next] || visited[next]) continue;
-          visited[next] = 1;
-          queue[tail] = next;
-          tail += 1;
-        }
-      }
-    }
-
-    if (area < minimumArea || area > maximumArea || maxX - minX < 3 || maxY - minY < 3) continue;
-    regions.push({ x: sumX / area / width, y: sumY / area / height, area });
-  }
-
-  const selected: typeof regions = [];
-  for (const region of regions.sort((a, b) => b.area - a.area)) {
-    const isNearAnother = selected.some((existing) => Math.hypot(existing.x - region.x, existing.y - region.y) < 0.02);
-    if (!isNearAnother) selected.push(region);
-  }
-  return selected.slice(0, 80);
-};
-
 const kindLabel = (kind: HoldKind) => {
   if (kind === 'start') return 'Start';
   if (kind === 'finish') return 'Finish';
@@ -174,6 +46,10 @@ const kindColor = (kind: HoldKind, holdColor: string) => {
   if (kind === 'finish') return '#f97316';
   return holdColor || '#3b82f6';
 };
+
+const contourPath = (marker: HoldMarker) => marker.contour?.length
+  ? 'M ' + marker.contour.map((point) => point.x + ' ' + point.y).join(' L ') + ' Z'
+  : '';
 
 export const HoldAnnotator = ({ image, color, markers, onChange }: HoldAnnotatorProps) => {
   const [activeTool, setActiveTool] = useState<HoldKind>('hold');
@@ -208,43 +84,31 @@ export const HoldAnnotator = ({ image, color, markers, onChange }: HoldAnnotator
     let cancelled = false;
     onChangeRef.current([]);
     setStatus('analyzing');
-    setAnalysisMessage('Looking for holds that match the selected color…');
+    setAnalysisMessage('Loading the pretrained climbing-hold model and checking the selected color…');
     const photo = new Image();
     photo.crossOrigin = 'anonymous';
     photo.onload = () => {
       if (cancelled) return;
-      try {
-        const scale = Math.min(1, 720 / Math.max(photo.naturalWidth, photo.naturalHeight));
-        const width = Math.max(1, Math.round(photo.naturalWidth * scale));
-        const height = Math.max(1, Math.round(photo.naturalHeight * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext('2d', { willReadFrequently: true });
-        if (!context) throw new Error('Canvas is unavailable');
-        context.drawImage(photo, 0, 0, width, height);
-        const regions = findColorRegions(context.getImageData(0, 0, width, height).data, width, height, color);
-
-        if (regions.length >= 2) {
-          const ordered = [...regions].sort((a, b) => b.y - a.y);
-          const detected: HoldMarker[] = ordered.map((region, index) => ({
-            x: region.x,
-            y: region.y,
-            kind: index === 0 ? 'start' : index === ordered.length - 1 ? 'finish' : 'hold',
-          }));
+      void (async () => {
+        try {
+          const detected = await detectColoredHolds(photo, color);
+          if (cancelled) return;
           onChangeRef.current(detected);
-          setStatus('detected');
-          setAnalysisMessage('Found ' + detected.length + ' color-matched regions. The lowest is marked as start and the highest as finish; please check them.');
-        } else {
-          onChangeRef.current(regions.map((region) => ({ x: region.x, y: region.y, kind: 'hold' })));
+          if (detected.length >= 2) {
+            setStatus('detected');
+            setAnalysisMessage('Outlined ' + detected.length + ' likely holds matching this color. Check the suggested start and finish and add or remove outlines if needed.');
+          } else {
+            setStatus('needs-help');
+            setAnalysisMessage('The model found only ' + detected.length + ' clear hold(s) in this color. Add the missing holds, start, and finish by hand.');
+          }
+        } catch (error) {
+          if (cancelled) return;
+          console.error('Climbing-hold model inference failed:', error);
+          onChangeRef.current([]);
           setStatus('needs-help');
-          setAnalysisMessage('I could not confidently find enough holds. Choose a marker below, then tap the photo to mark the holds, start, and finish.');
+          setAnalysisMessage('The model could not be loaded. Try again when online, or mark the holds, start, and finish by hand.');
         }
-      } catch {
-        if (cancelled) return;
-        setStatus('needs-help');
-        setAnalysisMessage('Automatic scanning did not work for this photo. You can still mark the holds, start, and finish by hand.');
-      }
+      })();
     };
     photo.onerror = () => {
       if (cancelled) return;
@@ -299,7 +163,7 @@ export const HoldAnnotator = ({ image, color, markers, onChange }: HoldAnnotator
       <div className="flex items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-bold uppercase tracking-wider text-white">Route photo marks</h3>
-          <p className="mt-1 text-xs text-zinc-500">Color scanning runs on this device; the photo is not sent to an AI service.</p>
+          <p className="mt-1 text-xs text-zinc-500">Photo analysis runs on this device; the photo is not sent to an AI service.</p>
         </div>
         <button
           type="button"
@@ -307,7 +171,7 @@ export const HoldAnnotator = ({ image, color, markers, onChange }: HoldAnnotator
           onClick={() => setAnalysisVersion((version) => version + 1)}
           className="shrink-0 rounded-lg bg-zinc-800 px-3 py-2 text-xs font-bold text-zinc-300 hover:bg-zinc-700 disabled:opacity-40"
         >
-          {status === 'analyzing' ? 'Scanning…' : 'Scan again'}
+          {status === 'analyzing' ? 'Analyzing…' : 'Analyze again'}
         </button>
       </div>
       <div className={'rounded-lg px-3 py-2 text-xs ' + (status === 'needs-help' ? 'bg-orange-500/10 text-orange-200' : 'bg-zinc-900 text-zinc-400')}>
@@ -320,7 +184,18 @@ export const HoldAnnotator = ({ image, color, markers, onChange }: HoldAnnotator
         aria-label="Route photo. Tap to add or move a marker."
       >
         <img src={image} alt="Climbing wall route" className="block h-auto w-full" draggable={false} />
+        <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+          {markers.filter((marker) => marker.contour && marker.contour.length > 2).map((marker, index) => (
+            <g key={'contour-' + index}>
+              <path d={contourPath(marker)} fill="none" stroke="#111827" strokeWidth="6" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+              <path d={contourPath(marker)} fill="none" stroke="#bef264" strokeWidth="3" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+            </g>
+          ))}
+        </svg>
         {markers.map((marker, index) => (
+          marker.kind === 'hold' && marker.contour
+            ? null
+            : (
           <button
             key={String(index) + '-' + marker.x + '-' + marker.y}
             type="button"
@@ -335,6 +210,7 @@ export const HoldAnnotator = ({ image, color, markers, onChange }: HoldAnnotator
           >
             {kindBadge(marker.kind, index)}
           </button>
+            )
         ))}
       </div>
 
@@ -369,7 +245,18 @@ export const HoldAnnotator = ({ image, color, markers, onChange }: HoldAnnotator
 export const HoldPhotoPreview = ({ image, color, markers }: { image: string; color?: string; markers: HoldMarker[] }) => (
   <div className="relative w-full overflow-hidden rounded-2xl bg-zinc-950">
     <img src={image} alt="Route holds with start and finish marked" className="block h-auto w-full" />
+    <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+      {markers.filter((marker) => marker.contour && marker.contour.length > 2).map((marker, index) => (
+        <g key={'preview-contour-' + index}>
+          <path d={contourPath(marker)} fill="none" stroke="#111827" strokeWidth="6" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+          <path d={contourPath(marker)} fill="none" stroke="#bef264" strokeWidth="3" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+        </g>
+      ))}
+    </svg>
     {markers.map((marker, index) => (
+      marker.kind === 'hold' && marker.contour
+        ? null
+        : (
       <span
         key={'preview-' + index + '-' + marker.x + '-' + marker.y}
         className="absolute flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white text-[10px] font-black text-white shadow-[0_0_0_2px_rgba(0,0,0,0.75)]"
@@ -377,6 +264,7 @@ export const HoldPhotoPreview = ({ image, color, markers }: { image: string; col
       >
         {kindBadge(marker.kind, index)}
       </span>
+        )
     ))}
   </div>
 );
